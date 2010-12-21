@@ -10,33 +10,83 @@ extern "C" {
 }
 #endif
 
+/* Support Perls olders than 5.004.  */
+#ifndef UV
+#  define UV IV
+#  ifndef sv_setuv
+#    define sv_setuv(sv,uv) sv_setnv(sv,(double)(unsigned long)(uv))
+#  endif
+#  ifndef U32
+#    define U32 I32
+#    define U16 I16
+#  endif
+#  ifndef POPu
+#    define POPu POPi
+#  endif
+#  ifndef UV_MAX
+#    define UV_MAX ((UV) -1)
+#  endif
+#  ifndef IV_MAX
+#    define IV_MAX ((IV) ((UV_MAX - 1) / 2))
+#  endif
+#  ifndef IV_MIN
+#    define IV_MIN (-1 - IV_MAX)
+#  endif
+#endif
+
 /* Why isn't in_eval defined with PERL_POLLUTE? */
 #if defined(na) && !defined(in_eval)
 #define in_eval PL_in_eval
 #endif
 
-/* First i such that ST(i) is a func arg */
+/* First i such that ST(i) is a func arg. 
+   This is not hardcoded anymore, as it is checked dynamically at testcall.
+   => CDECL_STACK_RESERVE
+*/
 #define DYNALIB_ARGSTART 3
 
 #ifndef DYNALIB_NUM_CALLBACKS
 #define DYNALIB_NUM_CALLBACKS 0
 #endif
 
+typedef unsigned char uchar;
+typedef char *        char_p;
+typedef unsigned int  uint;
+
+#ifdef DYNALIB_USE_cdecl6
+# define DYNALIB_DECL "cdecl6"
+# include "cdecl6.c"
+#endif
+#ifdef DYNALIB_USE_cdecl3
+# define DYNALIB_DECL "cdecl3"
+# include "cdecl3.c"
+#endif
+#ifdef DYNALIB_USE_cdecltr
+# define DYNALIB_DECL "cdecltr"
+# include "cdecltr.c"
+#endif
 #ifdef DYNALIB_USE_cdecl
-#define DYNALIB_DECL "cdecl"
-#include "cdecl.c"
+# define DYNALIB_DECL "cdecl"
+# include "cdecl.c"
 #endif
 #ifdef DYNALIB_USE_sparc
-#define DYNALIB_DECL "sparc"
-#include "sparc.c"
+# define DYNALIB_DECL "sparc"
+# include "sparc.c"
 #endif
 #ifdef DYNALIB_USE_alpha
-#define DYNALIB_DECL "alpha"
-#include "alpha.c"
+# define DYNALIB_DECL "alpha"
+# include "alpha.c"
 #endif
 #ifdef DYNALIB_USE_hack30
-#define DYNALIB_DECL "hack30"
-#include "hack30.c"
+# define DYNALIB_DECL "hack30"
+# include "hack30.c"
+#endif
+/* may be used additionally */
+#ifdef DYNALIB_USE_stdcall
+# ifndef DYNALIB_DECL
+#   define DYNALIB_DECL "stdcall"
+# endif
+# include "stdcall.c"
 #endif
 
 typedef long (*cb_callback) _((void * a, ...));
@@ -96,7 +146,7 @@ cb_call_sub(index, first, ap)
 #endif
     static char *first_msg = "Can't use '%c' as first argument type in callback";
 
-    config = (cb_entry *) SvPV(*av_fetch(cb_av_config, index, 0), na);
+    config = (cb_entry *) SvPV(*av_fetch(cb_av_config, index, 0), PL_na);
     ENTER;
     SAVETMPS;
     PUSHMARK(sp);
@@ -142,7 +192,7 @@ cb_call_sub(index, first, ap)
 	case 'Q' :
 	    if (sizeof (unsigned Quad_t) <= sizeof first) {
 		sv = newSV(0);
-		sv_setuv(sv, PTR2UV((unsigned Quad_t) first));
+		sv_setuv(sv, PTR2UV((Uquad_t) first));
 		XPUSHs(sv_2mortal(sv));
 	    }
 	    else
@@ -155,6 +205,7 @@ cb_call_sub(index, first, ap)
 				      (int) strtol(arg_type, &arg_type, 10))));
 	    -- arg_type;
 	    break;
+	case 'Z' :
 	case 'p' :
 	    XPUSHs(sv_2mortal(newSVpv((char *) first, 0)));
 	    break;
@@ -203,7 +254,7 @@ cb_call_sub(index, first, ap)
 		XPUSHs(sv_2mortal(sv));
 		break;
 	    case 'Q' :
-		auquad = va_arg(ap, unsigned Quad_t);
+		auquad = va_arg(ap, Uquad_t);
 		sv = newSV(0);
 		if (aquad <= UV_MAX)
 		    sv_setuv(sv, (UV)auquad);
@@ -224,6 +275,7 @@ cb_call_sub(index, first, ap)
 					  (int) strtol(arg_type, &arg_type, 10))));
 		-- arg_type;
 		break;
+	    case 'Z' :
 	    case 'p' :
 		XPUSHs(sv_2mortal(newSVpv(va_arg(ap, char *), 0)));
 		break;
@@ -235,7 +287,7 @@ cb_call_sub(index, first, ap)
     }
     PUTBACK;
 
-    if (in_eval) {
+    if (PL_in_eval) {
 	/*
 	 * XXX The whole issue of G_KEEPERR and `eval's is very confusing
 	 * to me. For example, we should be able to tell whether or not we
@@ -248,12 +300,12 @@ cb_call_sub(index, first, ap)
 	 *
 	 * It can also produce weirdness when used with Carp::confess.
 	 */
-	SvPV(GvSV(errgv), old_err_len);
+	SvPV(GvSV(PL_errgv), old_err_len);
 	nret = perl_call_sv(config->coderef, G_SCALAR | G_EVAL | G_KEEPERR);
 	SPAGAIN;
-	SvPV(GvSV(errgv), new_err_len);
+	SvPV(GvSV(PL_errgv), new_err_len);
 	if (new_err_len > old_err_len) {
-	    char *msg = SvPV(GvSV(errgv),na);
+	    char *msg = SvPV(GvSV(PL_errgv), PL_na);
 	    static char prefix[] = "\t(in cleanup) ";  /* from pp_ctl.c */
 
 	    if (old_err_len == 0 && strnEQ(msg, prefix, (sizeof prefix) - 1)) {
@@ -279,7 +331,7 @@ cb_call_sub(index, first, ap)
 	result = (long) (int) POPi;
 	break;
     case 'I' :
-	result = (long) (unsigned int) POPu;
+	result = (long) (uint) POPu;
 	break;
 #if defined(HAS_QUAD) && LONGSIZE >= 8
     case 'q' :
@@ -288,6 +340,7 @@ cb_call_sub(index, first, ap)
 #endif
 	/*
 	 * Returning a pointer is impossible to do safely, it seems.
+	 * We rather want to return a string instead.
 	 * case 'p' :
 	 *   result = (long) POPp;
 	 *   break;
@@ -358,10 +411,35 @@ Poke(dest, data)
 	  }
 	}
 
-
 BOOT:
-	/* $C::DynaLib::decl = cdecl or hack30 or ...; */
-	sv_setsv(get_sv("C::DynaLib::decl", 1), newSVpv(DYNALIB_DECL, 0));
+      {
+	/* @C::DynaLib::decl */
+	AV* av = get_av("C::DynaLib::decl", GV_ADD);
+#ifdef DYNALIB_USE_cdecl6
+	av_push(av, newSVpv("cdecl6",0));
+#endif
+#ifdef DYNALIB_USE_cdecl3
+	av_push(av, newSVpv("cdecl3",0));
+#endif
+#ifdef DYNALIB_USE_cdecl
+	av_push(av, newSVpv("cdecl ",0));
+#endif
+#ifdef DYNALIB_USE_sparc
+	av_push(av, newSVpv("sparc",0);
+#endif
+#ifdef DYNALIB_USE_alpha
+	av_push(av, newSVpv("alpha",0));
+#endif
+#ifdef DYNALIB_USE_hack30
+	av_push(av, newSVpv("hack30",0));
+#endif
+#ifdef DYNALIB_USE_stdcall
+	av_push(av, newSVpv("stdcall",0));
+#endif
+
+	/* $C::DynaLib::decl = cdecl,hack30,... */
+	sv_setsv(get_sv("C::DynaLib::decl", GV_ADD), newSVpv(DYNALIB_DEFAULT_CONV, 0));
 
 	/* Setup the callback config array. */
 	sv_setsv(SvRV(ST(2)), newRV((SV*) sv_2mortal(cb_init(ST(2)))));
+      }
